@@ -1,0 +1,40 @@
+' Internal Windows GetDiskFreeSpaceExW backend for DiskSpace.bui (x64/ARM64).
+' Adapted from containers/integrations/windows/WinFiles.bui (ReadDiskSpace).
+' Imported only by DiskSpace.bui under #If TargetWindows; not public API.
+
+#If TargetWindows Then
+Private Optional Declare Function NativeDiskSpace Lib "kernel32" Alias "GetDiskFreeSpaceExW" (filePath As Ptr, ByRef available As UInt64, ByRef total As UInt64, ByRef free As UInt64) As Int32
+Private Optional Declare Function NativeAttributes Lib "kernel32" Alias "GetFileAttributesW" (filePath As Ptr) As UInt32
+Private Optional Declare Function NativeError Lib "kernel32" Alias "GetLastError" () As UInt32
+
+Private Function WidePath(filePath As String) As Bytes
+    Dim encoded As Bytes = filePath.AsUTF16LE()
+    If encoded.Count > 65532 Then
+        Throw New InvalidArgumentException("Path exceeds 32766 UTF-16 code units")
+    End If
+    encoded.Append(0)
+    encoded.Append(0)
+    Return encoded
+End Function
+
+''' GetDiskFreeSpaceExW for a directory. available = FreeBytesAvailableToCaller
+''' (quota-aware), total = TotalNumberOfBytes (the caller's quota-scoped total),
+''' free = TotalNumberOfFreeBytes (volume-wide). Returns 0 or the Win32 error.
+Public Function DiskSpaceWindowsQuery(directoryPath As String, ByRef available As UInt64, ByRef total As UInt64, ByRef free As UInt64) As Integer
+    Dim encoded As Bytes = WidePath(directoryPath)
+    If NativeDiskSpace(encoded.DataPtr(), available, total, free) = 0 Then
+        Dim code As Integer = NativeError()
+        If code = 0 Then Return -1
+        Return code
+    End If
+    Return 0
+End Function
+#End If
+
+#If TargetWindows Then
+Public Function DiskSpaceWindowsIsFile(urlPath As String) As Boolean
+    Dim encoded As Bytes = WidePath(urlPath)
+    Dim attributes As UInt32 = NativeAttributes(encoded.DataPtr())
+    Return attributes <> 4294967295 And (attributes And 16) = 0
+End Function
+#End If

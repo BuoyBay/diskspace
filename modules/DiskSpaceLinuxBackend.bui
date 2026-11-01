@@ -1,0 +1,50 @@
+' Internal Linux/glibc statvfs backend for DiskSpace.bui (64-bit targets).
+' Adapted from containers/integrations/linux/linuxfilesystem.bui (ReadSpace).
+' Imported only by DiskSpace.bui under #If TargetLinux; not public API.
+
+#If TargetLinux Then
+' glibc LP64 statvfs: 11 unsigned long fields followed by 24 reserved bytes.
+' New glibc calls the first reserved word f_type; old releases reserve all six.
+Sequential Structure DiskSpaceLinuxStatvfs
+    BlockSize As UInt64
+    FragmentSize As UInt64
+    Blocks As UInt64
+    FreeBlocks As UInt64
+    AvailableBlocks As UInt64
+    Files As UInt64
+    FreeFiles As UInt64
+    AvailableFiles As UInt64
+    FileSystemId As UInt64
+    Flags As UInt64
+    NameMaximum As UInt64
+    Reserved0 As UInt32
+    Reserved1 As UInt32
+    Reserved2 As UInt32
+    Reserved3 As UInt32
+    Reserved4 As UInt32
+    Reserved5 As UInt32
+End Structure
+
+Private Optional Declare Function NativeSpace Lib "c" Alias "statvfs" (filePath As CString, ByRef info As DiskSpaceLinuxStatvfs) As Int32
+Private Optional Declare Function NativeErrno Lib "c" Alias "__errno_location" () As Ptr
+Private Optional Declare Function NativeCopyError Lib "c" Alias "memcpy" (ByRef value As Int32, source As Ptr, count As UInt64) As Ptr
+
+Private Function ErrorValue(address As Ptr) As Integer
+    Dim value As Int32 = 0
+    NativeCopyError(value, address, 4)
+    Return value
+End Function
+
+''' statvfs on an existing path, following symbolic links. Returns 0 or errno.
+Public Function DiskSpaceLinuxQuery(filePath As String, ByRef info As DiskSpaceLinuxStatvfs) As Integer
+    Dim address As Ptr = NativeErrno()
+    ' Resolve memcpy before the failing call, so its loader cannot affect errno.
+    ErrorValue(address)
+    If NativeSpace(CType(filePath, CString), info) <> 0 Then
+        Dim code As Integer = ErrorValue(address)
+        If code = 0 Then Return -1
+        Return code
+    End If
+    Return 0
+End Function
+#End If

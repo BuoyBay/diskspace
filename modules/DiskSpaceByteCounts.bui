@@ -1,0 +1,25 @@
+' Package-internal checked conversions shared by DiskSpace.bui backends.
+' Not re-exported by `Import diskspace`; tests reach it with the qualified
+' `Import diskspace.DiskSpaceByteCounts` to exercise overflow fixtures.
+
+''' count * unit as UInt64; OverflowException when the product exceeds 2^64 - 1.
+Public Function DiskSpaceCheckedProduct(count As UInt64, unit As UInt64, label As String) As UInt64
+    Dim maximum As UInt64 = 0
+    maximum = maximum - 1
+    If unit <> 0 Then
+        ' Preserve UInt64 on the division result before comparison (Buoy 0.72).
+        Dim quotient As UInt64 = maximum \ unit
+        If count > quotient Then Throw New OverflowException(label + " exceeds the unsigned 64-bit range")
+    End If
+    Dim product As UInt64 = count * unit
+    Return product
+End Function
+
+''' A UInt64 byte or node count as a signed Integer; OverflowException above
+''' 2^63 - 1 instead of a wrapped negative value.
+Public Function DiskSpaceSignedCount(value As UInt64, label As String) As Integer
+    Dim limit As UInt64 = 9223372036854775807
+    If value > limit Then Throw New OverflowException(label + " exceeds the signed 64-bit range")
+    Dim signed As Integer = value
+    Return signed
+End Function

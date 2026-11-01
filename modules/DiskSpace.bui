@@ -1,0 +1,330 @@
+Import DiskSpaceByteCounts
+#If TargetLinux Then
+Import DiskSpaceLinuxBackend As DiskSpaceBackend
+#ElseIf TargetWindows Then
+Import DiskSpaceWindowsBackend As DiskSpaceBackend
+#End If
+
+''' Frozen: True only where the original macOS NSFileManager backend runs.
+''' Portable code gates on DiskSpaceSnapshotSupported instead.
+Public Function DiskSpaceSupported() As Boolean
+    #If TargetMac Then
+        Return True
+    #Else
+        Return False
+    #End If
+End Function
+
+''' True when this compile target has a backend for DiskSpaceSnapshot and
+''' ReadDiskSpaceDetails (macOS, Linux statvfs, Windows GetDiskFreeSpaceExW).
+''' Compile-time only: it never touches a filesystem or prompts.
+Public Function DiskSpaceSnapshotSupported() As Boolean
+    #If TargetMac Or TargetLinux Or TargetWindows Then
+        Return True
+    #Else
+        Return False
+    #End If
+End Function
+
+#If TargetMac Then
+    Private Declare Function NativeClass Lib "objc" Alias "objc_getClass" (name As String) As Ptr
+    Private Declare Function Allocate Lib "Foundation" Selector "alloc" (cls As Ptr) As Ptr
+    Private Declare Function InitObject Lib "Foundation" Selector "init" (object As Ptr) As Ptr
+    Private Declare Function NewPool Lib "Foundation" Selector "new" (cls As Ptr) As Ptr
+    Private Declare Sub DrainPool Lib "Foundation" Selector "drain" (pool As Ptr)
+    Private Declare Sub ReleaseObject Lib "CoreFoundation" Alias "CFRelease" (value As Ptr)
+    Private Function NativeText(value As Ptr) As String
+        If value = Nil Then Return ""
+        Return CType(CType(value, CFStringRef), String)
+    End Function
+    Private Declare Function FileManager Lib "Foundation" Selector "defaultManager" (cls As Ptr) As Ptr
+    Private Declare Function FilesystemAttributes Lib "Foundation" Selector "attributesOfFileSystemForPath:error:" (manager As Ptr, filePath As Ptr, ByRef errorObject As Ptr) As Ptr
+    Private Declare Function DictionaryItem Lib "Foundation" Selector "objectForKey:" (dictionary As Ptr, key As Ptr) As Ptr
+    Private Declare Function NumberValue Lib "Foundation" Selector "longLongValue" (number As Ptr) As Integer
+    Private Function ReadNumber(dictionary As Ptr, key As String) As Integer
+        Dim text As CFStringRef = CType(key, CFStringRef)
+        Try
+            Return NumberValue(DictionaryItem(dictionary, text))
+        Finally
+            ReleaseObject(text)
+        End Try
+    End Function
+    Private Declare Function UnsignedNumberValue Lib "Foundation" Selector "unsignedLongLongValue" (number As Ptr) As UInt64
+    Private Declare Function FileURL Lib "Foundation" Selector "fileURLWithPath:" (cls As Ptr, filePath As Ptr) As Ptr
+    Private Declare Function ResourceValue Lib "Foundation" Selector "getResourceValue:forKey:error:" (url As Ptr, ByRef value As Ptr, key As Ptr, ByRef errorObject As Ptr) As UInt8
+    Private Function ReadUnsigned(dictionary As Ptr, key As String) As UInt64
+        Dim text As CFStringRef = CType(key, CFStringRef)
+        Try
+            Return UnsignedNumberValue(DictionaryItem(dictionary, text))
+        Finally
+            ReleaseObject(text)
+        End Try
+    End Function
+    ' NSURLVolumeAvailableCapacityKey: bytes available to the caller. Must run
+    ' inside an autorelease pool. None when the volume does not report it.
+    Private Function VolumeAvailable(filePath As CFStringRef) As Optional Of UInt64
+        Dim url As Ptr = FileURL(NativeClass("NSURL"), filePath)
+        If url = Nil Then Return None
+        Dim key As CFStringRef = CType("NSURLVolumeAvailableCapacityKey", CFStringRef)
+        Try
+            Dim value As Ptr = Nil
+            Dim errorObject As Ptr = Nil
+            If ResourceValue(url, value, key, errorObject) = 0 Or value = Nil Then Return None
+            Return Some(UnsignedNumberValue(value))
+        Finally
+            ReleaseObject(key)
+        End Try
+    End Function
+#End If
+
+#If TargetWindows Then
+    ' GetDiskFreeSpaceExW needs a directory with a trailing separator; a file
+    ' is measured through its containing directory.
+    Private Function WindowsDirectory(file As FileSystemItem) As String
+        Dim directoryPath As String = file.NativePath
+        If DiskSpaceBackend.DiskSpaceWindowsIsFile(directoryPath) Then
+            Dim cut As Integer = String.LastIndexOfBytes(directoryPath, "\\")
+            Dim slash As Integer = String.LastIndexOfBytes(directoryPath, "/")
+            If slash > cut Then cut = slash
+            If cut >= 0 Then
+                directoryPath = String.LeftBytes(directoryPath, cut + 1)
+            Else
+                directoryPath = "."
+            End If
+        End If
+        If Not String.EndsWith(directoryPath, "\\") And Not String.EndsWith(directoryPath, "/") Then directoryPath = directoryPath + "\\"
+        Return directoryPath
+    End Function
+#End If
+
+Private Sub ValidateText(value As String, label As String)
+    If String.Trim(value) = "" Then Throw New InvalidArgumentException(label + " is required")
+    For Each character As String In String.Chars(value)
+        If String.Asc(character) = 0 Then Throw New InvalidArgumentException(label + " contains NUL")
+    Next
+End Sub
+
+Private Sub ValidateFile(file As FileSystemItem)
+    If file = Nil Then Throw New InvalidArgumentException("A filesystem path is required")
+    ValidateText(file.NativePath, "Filesystem path")
+End Sub
+
+Private Sub FailUnavailable(code As Integer, domain As String)
+    Throw New InvalidArgumentException("Filesystem information is unavailable for this path (" + domain + " " + Str(code) + ")", code)
+End Sub
+
+''' Unsigned capacity details for the volume containing a path. Values are not
+''' clipped to the signed range. Field scopes differ by platform; see each field.
+Public Class DiskSpaceDetails
+    Internal Property mTotalBytes As UInt64 = 0
+    ''' Linux f_blocks*f_frsize and macOS NSFileSystemSize: volume capacity.
+    ''' Windows TotalNumberOfBytes: capacity visible to the caller, which a
+    ''' per-user quota can reduce below volume size (IsTotalCallerScoped).
+    Public Property TotalBytes As UInt64
+        Get
+            Return Me.mTotalBytes
+        End Get
+    End Property
+    Internal Property mFreeBytes As UInt64 = 0
+    ''' Volume-wide free bytes, including space reserved for root or outside the
+    ''' caller's quota (Linux f_bfree*f_frsize, macOS NSFileSystemFreeSize,
+    ''' Windows TotalNumberOfFreeBytes). On Windows it can exceed TotalBytes.
+    Public Property FreeBytes As UInt64
+        Get
+            Return Me.mFreeBytes
+        End Get
+    End Property
+    Internal Property mAvailableBytes As UInt64 = 0
+    ''' Bytes the calling user can write (Linux f_bavail*f_frsize, macOS
+    ''' NSURLVolumeAvailableCapacityKey, Windows FreeBytesAvailableToCaller).
+    Public Property AvailableBytes As UInt64
+        Get
+            Return Me.mAvailableBytes
+        End Get
+    End Property
+    Internal Property mIsTotalCallerScoped As Boolean = False
+    ''' True on Windows, where TotalBytes reports the caller's quota-scoped
+    ''' total rather than volume capacity. False on macOS and Linux.
+    Public Property IsTotalCallerScoped As Boolean
+        Get
+            Return Me.mIsTotalCallerScoped
+        End Get
+    End Property
+    Internal Property mHasNodeCounts As Boolean = False
+    ''' True when TotalNodes and FreeNodes hold values. False on Windows and on
+    ''' Linux filesystems that report zero inodes (for example btrfs).
+    Public Property HasNodeCounts As Boolean
+        Get
+            Return Me.mHasNodeCounts
+        End Get
+    End Property
+    Internal Property mTotalNodes As Optional Of UInt64 = None
+    Public Property TotalNodes As Optional Of UInt64
+        Get
+            Return Me.mTotalNodes
+        End Get
+    End Property
+    Internal Property mFreeNodes As Optional Of UInt64 = None
+    Public Property FreeNodes As Optional Of UInt64
+        Get
+            Return Me.mFreeNodes
+        End Get
+    End Property
+    Internal Property mAvailableNodes As Optional Of UInt64 = None
+    ''' Linux f_favail (inodes available to unprivileged users). None elsewhere.
+    Public Property AvailableNodes As Optional Of UInt64
+        Get
+            Return Me.mAvailableNodes
+        End Get
+    End Property
+    Internal Sub Constructor()
+    End Sub
+End Class
+
+''' Reads unsigned capacity details for the volume containing file, following
+''' symbolic links. Read-only; never prompts. InvalidArgumentException for a
+''' Nil/blank/NUL path or a path the platform cannot measure (ErrorCode = errno
+''' or Win32 error); UnsupportedOperationException on targets without a backend.
+''' macOS also throws InvalidArgumentException when the volume reports no
+''' caller-available capacity.
+Public Function ReadDiskSpaceDetails(file As FileSystemItem) As DiskSpaceDetails
+    ValidateFile(file)
+    Dim details As New DiskSpaceDetails()
+    #If TargetMac Then
+        Dim pool As Ptr = NewPool(NativeClass("NSAutoreleasePool"))
+        Dim text As CFStringRef = CType(file.NativePath, CFStringRef)
+        Try
+            Dim errorObject As Ptr = Nil
+            Dim attributes As Ptr = FilesystemAttributes(FileManager(NativeClass("NSFileManager")), text, errorObject)
+            If attributes = Nil Then Throw New InvalidArgumentException("Filesystem information is unavailable for this path")
+            Dim available As Optional Of UInt64 = VolumeAvailable(text)
+            If Not available.HasValue Then Throw New InvalidArgumentException("Caller-available capacity is unavailable for this path")
+            details.mTotalBytes = ReadUnsigned(attributes, "NSFileSystemSize")
+            details.mFreeBytes = ReadUnsigned(attributes, "NSFileSystemFreeSize")
+            details.mAvailableBytes = available.Value
+            details.mHasNodeCounts = True
+            details.mTotalNodes = Some(ReadUnsigned(attributes, "NSFileSystemNodes"))
+            details.mFreeNodes = Some(ReadUnsigned(attributes, "NSFileSystemFreeNodes"))
+        Finally
+            ReleaseObject(text)
+            DrainPool(pool)
+        End Try
+    #ElseIf TargetLinux Then
+        Dim info As DiskSpaceLinuxStatvfs
+        Dim code As Integer = DiskSpaceBackend.DiskSpaceLinuxQuery(file.NativePath, info)
+        If code <> 0 Then FailUnavailable(code, "errno")
+        ' POSIX: f_blocks, f_bfree and f_bavail are in f_frsize units.
+        details.mTotalBytes = DiskSpaceCheckedProduct(info.Blocks, info.FragmentSize, "Total bytes")
+        details.mFreeBytes = DiskSpaceCheckedProduct(info.FreeBlocks, info.FragmentSize, "Free bytes")
+        details.mAvailableBytes = DiskSpaceCheckedProduct(info.AvailableBlocks, info.FragmentSize, "Available bytes")
+        If info.Files <> 0 Then
+            details.mHasNodeCounts = True
+            details.mTotalNodes = Some(info.Files)
+            details.mFreeNodes = Some(info.FreeFiles)
+            details.mAvailableNodes = Some(info.AvailableFiles)
+        End If
+    #ElseIf TargetWindows Then
+        Dim available As UInt64 = 0
+        Dim total As UInt64 = 0
+        Dim free As UInt64 = 0
+        Dim code As Integer = DiskSpaceBackend.DiskSpaceWindowsQuery(WindowsDirectory(file), available, total, free)
+        If code <> 0 Then FailUnavailable(code, "Win32 error")
+        details.mTotalBytes = total
+        details.mFreeBytes = free
+        details.mAvailableBytes = available
+        details.mIsTotalCallerScoped = True
+    #Else
+        Throw New UnsupportedOperationException("Disk-space details require macOS, Linux or Windows")
+    #End If
+    Return details
+End Function
+
+Public Class DiskSpaceSnapshot
+    Private Property mTotalBytes As Integer = 0
+    Public Property TotalBytes As Integer
+        Get
+            Return Me.mTotalBytes
+        End Get
+    End Property
+    Private Property mFreeBytes As Integer = 0
+    Public Property FreeBytes As Integer
+        Get
+            Return Me.mFreeBytes
+        End Get
+    End Property
+    Private Property mTotalNodes As Integer = 0
+    ''' -1 when HasNodeCounts is False.
+    Public Property TotalNodes As Integer
+        Get
+            Return Me.mTotalNodes
+        End Get
+    End Property
+    Private Property mFreeNodes As Integer = 0
+    ''' -1 when HasNodeCounts is False.
+    Public Property FreeNodes As Integer
+        Get
+            Return Me.mFreeNodes
+        End Get
+    End Property
+    Private Property mAvailableBytes As Integer = 0
+    ''' Bytes usable by the caller (see DiskSpaceDetails.AvailableBytes). macOS
+    ''' reports -1 if the volume does not provide it; the constructor does not
+    ''' throw for that, preserving existing macOS callers.
+    Public Property AvailableBytes As Integer
+        Get
+            Return Me.mAvailableBytes
+        End Get
+    End Property
+    Private Property mHasNodeCounts As Boolean = False
+    ''' False on Windows and inode-less Linux filesystems (nodes are -1).
+    Public Property HasNodeCounts As Boolean
+        Get
+            Return Me.mHasNodeCounts
+        End Get
+    End Property
+    ''' Signed snapshot. On Linux and Windows, values above 2^63 - 1 throw
+    ''' OverflowException; ReadDiskSpaceDetails returns the unsigned values.
+    ''' TotalBytes/FreeBytes keep each platform's scope (see DiskSpaceDetails).
+    Public Sub Constructor(file As FileSystemItem)
+        If file = Nil Then Throw New InvalidArgumentException("A filesystem path is required")
+        ValidateText(file.NativePath, "Filesystem path")
+        #If TargetMac Then
+            Dim pool As Ptr = NewPool(NativeClass("NSAutoreleasePool"))
+            Dim text As CFStringRef = CType(file.NativePath, CFStringRef)
+            Try
+                Dim errorObject As Ptr = Nil
+                Dim attributes As Ptr = FilesystemAttributes(FileManager(NativeClass("NSFileManager")), text, errorObject)
+                If attributes = Nil Then Throw New InvalidArgumentException("Filesystem information is unavailable for this path")
+                Me.mTotalBytes = ReadNumber(attributes, "NSFileSystemSize")
+                Me.mFreeBytes = ReadNumber(attributes, "NSFileSystemFreeSize")
+                Me.mTotalNodes = ReadNumber(attributes, "NSFileSystemNodes")
+                Me.mFreeNodes = ReadNumber(attributes, "NSFileSystemFreeNodes")
+                Me.mHasNodeCounts = True
+                Me.mAvailableBytes = -1
+                Dim available As Optional Of UInt64 = VolumeAvailable(text)
+                If available.HasValue Then
+                    Dim limit As UInt64 = 9223372036854775807
+                    If available.Value <= limit Then Me.mAvailableBytes = available.Value
+                End If
+            Finally
+                ReleaseObject(text)
+                DrainPool(pool)
+            End Try
+        #ElseIf TargetLinux Or TargetWindows Then
+            Dim details As DiskSpaceDetails = ReadDiskSpaceDetails(file)
+            Me.mTotalBytes = DiskSpaceSignedCount(details.TotalBytes, "Total bytes")
+            Me.mFreeBytes = DiskSpaceSignedCount(details.FreeBytes, "Free bytes")
+            Me.mAvailableBytes = DiskSpaceSignedCount(details.AvailableBytes, "Available bytes")
+            Me.mHasNodeCounts = details.HasNodeCounts
+            If details.HasNodeCounts Then
+                Me.mTotalNodes = DiskSpaceSignedCount(details.TotalNodes.Value, "Total nodes")
+                Me.mFreeNodes = DiskSpaceSignedCount(details.FreeNodes.Value, "Free nodes")
+            Else
+                Me.mTotalNodes = -1
+                Me.mFreeNodes = -1
+            End If
+        #Else
+            Throw New UnsupportedOperationException("Disk-space snapshots require macOS")
+        #End If
+    End Sub
+End Class
