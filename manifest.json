@@ -2,7 +2,7 @@
     "schema": 1,
     "name": "diskspace",
     "version": "0.1.0",
-    "description": "Filesystem capacity and caller-available space",
+    "description": "Disk capacity and free space",
     "platforms": [
         "arm64-apple-macos",
         "x86_64-apple-macos",

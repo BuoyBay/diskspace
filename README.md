@@ -1,4 +1,4 @@
-# Filesystem capacity and caller-available space
+# Disk capacity and free space
 
 `Import diskspace`. `New DiskSpaceSnapshot(file)` returns read-only signed `TotalBytes`, `FreeBytes`, `AvailableBytes`, `TotalNodes` and `FreeNodes` for the filesystem containing an existing path, plus `HasNodeCounts`. `ReadDiskSpaceDetails(file)` returns the same capacity as unsigned `UInt64` values with explicit scopes. Values are OS snapshots, not reservations or promises that a future write will succeed. Nothing is written and nothing prompts.
 
