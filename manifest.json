@@ -2,7 +2,7 @@
   "schema": 1,
   "name": "diskspace",
   "version": "0.1.0",
-  "description": "Read-only filesystem capacity snapshots on macOS, Linux and Windows, with caller-available bytes and unsigned capacity details",
+  "description": "Read filesystem capacity and caller-available space",
   "platforms": [
     "arm64-apple-macos",
     "x86_64-apple-macos",
