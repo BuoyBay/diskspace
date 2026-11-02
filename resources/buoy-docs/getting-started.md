@@ -9,15 +9,11 @@ related: ["index.md", "api.md", "typed-api.md"]
 
 # Getting started
 
-## Install and import
-
-Maintainers run the private validation suite before release. See the repository README for public build instructions.
-
 ## First use
 
 Pass a non-Nil `FileSystemItem` for an existing accessible path. Read the integer counters from the snapshot; `AvailableBytes` is what the current user can write, `FreeBytes` is volume-wide. Construct a new snapshot whenever a fresh measurement is needed.
 
-```buoy
+```basic
 Import diskspace
 
 Sub Main()

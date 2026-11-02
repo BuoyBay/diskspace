@@ -13,8 +13,6 @@ related: ["api.md", "getting-started.md", "index.md"]
 
 Generated from the package source declarations. Platform guards are shown where present; inherited members are documented on the base type. See the [API contracts](api.md) for behavior and limitations.
 
-## DiskSpace functions
-
 ### DiskSpaceSupported
 
 `Public Function DiskSpaceSupported() As Boolean`
@@ -109,8 +107,6 @@ Signed snapshot. On Linux and Windows, values above 2^63 - 1 throw OverflowExcep
 
 Returns: no value.
 
-## DiskSpaceByteCounts functions
-
 ### DiskSpaceCheckedProduct
 
 `Public Function DiskSpaceCheckedProduct(count As UInt64, unit As UInt64, label As String) As UInt64`
@@ -176,8 +172,6 @@ A UInt64 byte or node count as a signed Integer; OverflowException above 2^63 - 
 | `Reserved4` | `UInt32` | — | — |
 | `Reserved5` | `UInt32` | — | — |
 
-## DiskSpaceLinuxBackend functions
-
 ### DiskSpaceLinuxQuery
 
 `Public Function DiskSpaceLinuxQuery(filePath As String, ByRef info As DiskSpaceLinuxStatvfs) As Integer`
@@ -198,8 +192,6 @@ Availability: `#If TargetLinux Then`
 | Type |
 | --- |
 | `Integer` |
-
-## DiskSpaceWindowsBackend functions
 
 ### DiskSpaceWindowsQuery
 

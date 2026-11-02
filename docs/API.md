@@ -15,6 +15,4 @@ On Windows a per-user quota can make `TotalBytes` smaller than the volume and `F
 
 Linux and Windows backends live in internal modules (`DiskSpaceLinuxBackend`, `DiskSpaceWindowsBackend`, `DiskSpaceByteCounts`). Their declarations are copied from the container interop modules (`linuxfilesystem.ReadSpace`, `WinFiles.ReadDiskSpace`); the package imports no container code. FSID, mount flags and raw block counts stay in those legacy modules.
 
-Maintainers run the private validation suite before release. See the repository README for public build instructions.
-
 Inspired by [macoslib’s Cocoa examples](https://github.com/macoslib/macoslib); implemented independently against [Apple’s API](https://developer.apple.com/documentation/foundation/filemanager/attributesoffilesystem(forpath:)).
